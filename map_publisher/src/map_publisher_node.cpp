@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include <sstream>
+#include <cstdint>
 #include <rclcpp/qos.hpp> // 加上這個 include
 
 class MapPublisher : public rclcpp::Node
@@ -62,22 +63,37 @@ public:
             map_msg->info.origin.position.z = 0.0;
             map_msg->info.origin.orientation.w = 1.0;
 
-            // 讀取地圖數據
-            std::vector<int8_t> map_data(map_msg->info.width * map_msg->info.height);
-            map_file_stream.read(reinterpret_cast<char*>(map_data.data()), map_data.size());
+            // 讀取PGM數據 (使用 uint8_t 讀取以正確處理 0-255 的數值)
+            std::vector<uint8_t> pgm_data(map_msg->info.width * map_msg->info.height);
+            map_file_stream.read(reinterpret_cast<char*>(pgm_data.data()), pgm_data.size());
             
-            // 轉換數據格式
-            for (auto& pixel : map_data) {
-                if (pixel == 0) {
-                    pixel = 100; // 佔用
-                } else if (pixel == 254) {
-                    pixel = 0;   // 空閒
-                } else {
-                    pixel = -1;  // 未知
+            // 準備地圖消息數據
+            map_msg->data.resize(map_msg->info.width * map_msg->info.height);
+
+            // 轉換數據格式並進行 Y 軸翻轉 (解決鏡像問題)
+            // ROS 地圖原點在左下 (y=0 在下)，PGM 原點在左上 (y=0 在上)
+            for (size_t y = 0; y < map_msg->info.height; y++) {
+                for (size_t x = 0; x < map_msg->info.width; x++) {
+                    // 讀取 PGM 圖像的倒數第 y 行 (即將圖像上下翻轉投影到地圖)
+                    size_t pgm_index = (map_msg->info.height - 1 - y) * map_msg->info.width + x;
+                    
+                    // 寫入 Map 的第 y 行
+                    size_t map_index = y * map_msg->info.width + x;
+
+                    uint8_t pixel_val = pgm_data[pgm_index];
+                    int8_t map_val;
+
+                    if (pixel_val == 0) {
+                        map_val = 100; // 佔用 (黑色)
+                    } else if (pixel_val == 254) {
+                        map_val = 0;   // 空閒 (白色)
+                    } else {
+                        map_val = -1;  // 未知 (灰色)
+                    }
+                    
+                    map_msg->data[map_index] = map_val;
                 }
             }
-
-            map_msg->data = map_data;
 
             // 發布地圖
             publisher_->publish(std::move(map_msg));
